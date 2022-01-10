@@ -1,0 +1,91 @@
+1. Configuration
+
+Configuration was designed with the support for Kubernetes in mind. Through environment variables you can specify the volume 
+to which ConfigMap or Secret is mounted. Keys in the configuration file are named after the option class to which they will 
+be bound.
+
+CONFIG_PATH - environment variable holds path to the volume that contains general configuration like RabbitMq host
+information and Kafka brokers. The file is later added through the extension to the IConfigurationBuilder that is inside
+DependencyInjection class. Extension method AddApplicationConfigurationFile is later called in the Program class.
+
+RABBIT_CREDS_PATH - environment variable that holds path to the volume that contains username/password for the RabbitMq.
+
+2. Dependency Injection
+
+Application project contains several services like MediatR, AutoMapper, KafkaProducer that are needed to be added into
+IoC container. As this project is outside of the WebApi project, there is an extension for IServiceCollection
+in Application project called AddApplication that is later invoked in Startup class of WebApi project.
+
+3. Validation
+
+Validation of the models is done through PipelineBehavior of the MediatR and FluentValidation. Before every command
+handler is invoked, ValidationBehavior checks that command for validity. 
+
+Other Pipelines are used for measuring the request time (PerformanceBehavior) and logging (RequestPreProcessor).
+
+4. Events
+
+Events in the system are done through publish mechanism of the MediatR. All the events have to inherit from 
+DomainEventNotification which is the requirement of the library. The problem is that Events are part of the Domain project
+which does not contain MediatR as a dependency (Domain should not depend on any framework or any other project).
+DomainEventService class is designed to solve this issue. It creates objects of type DomainEventNotification and publishes
+them to MediatR. All the events in Domain project are inherited from the DomainEvent so that DomainEventService can have
+a base class for events.
+
+5. Description of the events
+
+MessageCreatedEvent - occurs when the message have passed validation behavior. It maps newly created message to the
+CheckMnp command so that it can be published and then consumed by MnpBlacklist service. CheckMnp is the part of the
+common library Kibrit.Smpp because of the MassTransit's Interoperability (https://masstransit-project.com/architecture/interoperability.html).
+Basically MassTransit when serializing any object also adds information about its type into serialized data. This is
+crucial for the deserialization process. Because consumers should use the classes from the same namespace and the same
+name from which they were serialized. That is why there is common library Kibrit.Smpp which can be referenced in different
+microservices that need to communicate through message broker.
+
+MessageCreatedEvent - indicates that the message has passed validation and guid was assigned. This message
+will be published to mnp_blacklist queue in message broker.
+
+UpdateMessageStateEvent - publishes into Kafka topic messagestate with state Created.
+
+6. Dockerfile
+
+You won't be able to build the image by just doing "docker build" as the are multiple projects that are outside of the
+build context of the WebApi project. So you will need to use docker-compose at the root of the solution that points its
+build context to the root of the solution.
+
+Example:
+
+webapi:
+    build:
+        context: /path/to/the/solution/location
+        dockerfile: /path/to/the/dockerfile
+
+7. API
+
+/api/message/send
+
+Request:
+
+{
+    "source" -> not null, not empty, string
+    "destination" -> not null, not empty, string
+    "text" -> not null, not empty, string, max length: 480
+    "tag" -> not null, not empty, string
+}
+
+Response
+
+"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX" -> Guid of the new message
+
+
+/api/message/status
+
+Request:
+
+{
+    "id" -> not null, not empty guid
+}
+
+Response
+
+"XX" -> Status of the message according to MessageState in Kibrit.Smpp
